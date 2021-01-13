@@ -46,6 +46,8 @@ const static vec2 rocket_size(25, 24);
 const static float tank_radius = 8.5f;
 const static float rocket_radius = 10.f;
 
+std::mutex tLock;
+
 // -----------------------------------------------------------
 // Initialize the application
 // -----------------------------------------------------------
@@ -122,49 +124,67 @@ Tank& Game::find_closest_enemy(Tank& current_tank)
 // -----------------------------------------------------------
 void Game::update(float deltaTime)
 {
-    //Update tanks
-    for (Tank& tank : tanks)
+    int batch = tanks.size();
+    int mod = tanks.size() % threadCount;
+    int current = 0;
+    std::vector<future<void>*> futures;
+    for (int i = 0; i < threadCount; i++)
     {
-        if (tank.active)
-        {
-            //Check tank collision and nudge tanks away from each other
-            for (Tank& oTank : tanks)
+        int start = current;
+        int end = current + batch + (--mod > 0 ? 1 : 0);
+        current = end;
+
+        futures.push_back(&pool.enqueue([&]() {
+            for (int i = start; i < end; i++)
             {
-                if (&tank == &oTank) continue;
-
-                vec2 dir = tank.get_position() - oTank.get_position();
-                float dirSquaredLen = dir.sqr_length();
-
-                float colSquaredLen = (tank.get_collision_radius() + oTank.get_collision_radius());
-                colSquaredLen *= colSquaredLen;
-
-                if (dirSquaredLen < colSquaredLen)
+                Tank& tank = tanks.at(i);
+                if (tank.active)
                 {
-                    tank.push(dir.normalized(), 1.f);
+                    //Check tank collision and nudge tanks away from each other
+                    for (Tank& oTank : tanks)
+                    {
+                        if (&tank == &oTank) continue;
+
+                        vec2 dir = tank.get_position() - oTank.get_position();
+                        float dirSquaredLen = dir.sqr_length();
+
+                        float colSquaredLen = (tank.get_collision_radius() + oTank.get_collision_radius());
+                        colSquaredLen *= colSquaredLen;
+
+                        if (dirSquaredLen < colSquaredLen)
+                        {
+                            tank.push(dir.normalized(), 1.f);
+                        }
+                    }
+
+                    //Move tanks according to speed and nudges (see above) also reload
+                    tank.tick();
+
+                    //Shoot at closest target if reloaded
+                    if (tank.rocket_reloaded())
+                    {
+                        Tank& target = find_closest_enemy(tank);
+                        tLock.lock();
+                        rockets.push_back(Rocket(tank.position, (target.get_position() - tank.position).normalized() * 3, rocket_radius, tank.allignment, ((tank.allignment == RED) ? &rocket_red : &rocket_blue)));
+                        tLock.unlock();
+                        tank.reload_rocket();
+                    }
                 }
             }
-
-            //Move tanks according to speed and nudges (see above) also reload
-            tank.tick();
-
-            //Shoot at closest target if reloaded
-            if (tank.rocket_reloaded())
-            {
-                Tank& target = find_closest_enemy(tank);
-
-                rockets.push_back(Rocket(tank.position, (target.get_position() - tank.position).normalized() * 3, rocket_radius, tank.allignment, ((tank.allignment == RED) ? &rocket_red : &rocket_blue)));
-
-                tank.reload_rocket();
-            }
-        }
+        }));
+        std::cout << ".";
     }
+   
 
     //Update smoke plumes
     for (Smoke& smoke : smokes)
     {
         smoke.tick();
     }
-
+    for (int i = 0; i < threadCount; i++)
+    {
+        futures.at(i)->wait();
+    }
     //Update rockets
     for (Rocket& rocket : rockets)
     {
@@ -201,30 +221,16 @@ void Game::update(float deltaTime)
         int current = 0;
         std::vector<future<void>*> futures;
 
-        for (int i = 0; i < threadCount; i++)
+        for (Tank& tank : tanks)
         {
-            int start = current;
-            int end = current + batch + (--mod > 0 ? 1 : 0);
-            current = end;
-            //Damage all tanks within the damage window of the beam (the window is an axis-aligned bounding box)
-            futures.push_back(&pool.enqueue([&]() {
-                for (int i = start; i < batch; i++)
-                {
-                    Tank tank = tanks.at(i);
-                    if (tank.active && particle_beam.rectangle.intersects_circle(tank.get_position(), tank.get_collision_radius()))
-                    {
-                        if (tank.hit(particle_beam.damage))
-                        {
-                            smokes.push_back(Smoke(smoke, tank.position - vec2(0, 48)));
-                        }
-                    }
-                }
-            }));
-        }
 
-        for (int i = 0; i < threadCount; i++)
-        {
-            futures.at(i)->wait();
+            if (tank.active && particle_beam.rectangle.intersects_circle(tank.get_position(), tank.get_collision_radius()))
+            {
+                if (tank.hit(particle_beam.damage))
+                {
+                    smokes.push_back(Smoke(smoke, tank.position - vec2(0, 48)));
+                }
+            }
         }
     }
 
@@ -245,7 +251,7 @@ void Game::draw()
     //Draw background
     background.draw(screen, 0, 0);
 
-    int batch = (NUM_TANKS_BLUE + NUM_TANKS_RED) / threadCount;
+    int batch = tanks.size() / threadCount;
     int current = 0;
     int mod = tanks.size() % threadCount;
     std::vector<future<void>*> futures;
@@ -267,9 +273,13 @@ void Game::draw()
                     background.get_buffer()[(int)tPos.x + (int)tPos.y * SCRWIDTH] = sub_blend(background.get_buffer()[(int)tPos.x + (int)tPos.y * SCRWIDTH], 0x808080);
             }
         }));
-        std::cout << "." << std::endl;
+        std::cout << ".";
     }
-
+    //wait for drawSpirtes
+    for (int i = 0; i < threadCount; i++)
+    {
+        futures.at(i)->wait();
+    }
     for (Rocket& rocket : rockets)
     {
         rocket.draw(screen);
@@ -284,11 +294,7 @@ void Game::draw()
     {
         particle_beam.draw(screen);
     }
-    //wait for drawSpirtes
-    for (int i = 0; i < threadCount; i++)
-    {
-        futures.at(i)->wait();
-    }
+
 
     int explosionBatch = explosions.size() / threadCount;
     int explosionCurrent = 0;
@@ -306,6 +312,11 @@ void Game::draw()
                 explosions.at(i).draw(screen);
             }
         }));
+    }
+     //wait for explosions
+    for (int i = 0; i < threadCount; i++)
+    {
+        futures.at(i)->wait();
     }
 
     //Draw sorted health bars
@@ -329,11 +340,7 @@ void Game::draw()
         }
     }
 
-    //wait for explosions
-    for (int i = 0; i < threadCount; i++)
-    {
-        futures.at(i)->wait();
-    }
+   
 }
 
 // -----------------------------------------------------------

@@ -134,7 +134,7 @@ void Game::update(float deltaTime)
         int end = current + batch + (--mod > 0 ? 1 : 0);
         current = end;
 
-        futures.push_back(&pool.enqueue([&]() {
+        futures.push_back(&pool.enqueue([&, start, end]() {
             for (int i = start; i < end; i++)
             {
                 Tank& tank = tanks.at(i);
@@ -172,7 +172,7 @@ void Game::update(float deltaTime)
                 }
             }
         }));
-        std::cout << ".";
+       // std::cout << ".";
     }
    
 
@@ -262,7 +262,7 @@ void Game::draw()
         int end = current + batch + (--mod > 0 ? 1 : 0);
         current = end;
 
-        futures.push_back(&pool.enqueue([&]() {
+        futures.push_back(&pool.enqueue([&, start, end]() {
             for (int i = start; i < end; i++)
             {
                 tanks.at(i).draw(screen);
@@ -273,7 +273,7 @@ void Game::draw()
                     background.get_buffer()[(int)tPos.x + (int)tPos.y * SCRWIDTH] = sub_blend(background.get_buffer()[(int)tPos.x + (int)tPos.y * SCRWIDTH], 0x808080);
             }
         }));
-        std::cout << ".";
+        //std::cout << ".";
     }
     //wait for drawSpirtes
     for (int i = 0; i < threadCount; i++)
@@ -306,12 +306,13 @@ void Game::draw()
         int end = explosionCurrent + explosionBatch + (--explosionmod > 0 ? 1 : 0);
         explosionCurrent = end;
 
-        futures.push_back(&pool.enqueue([&]() {
+        futures.push_back(&pool.enqueue([&, start, end]() {
             for (int i = start; i < end; i++)
             {
                 explosions.at(i).draw(screen);
             }
         }));
+       // std::cout << ".";
     }
      //wait for explosions
     for (int i = 0; i < threadCount; i++)
